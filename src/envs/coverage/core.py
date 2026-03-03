@@ -4,6 +4,7 @@ import numpy as np
 from .scenarios import make_map, spawn_agents
 from .rewards import compute_rewards  # optional
 from .render import render_world      # optional
+from .agent_types import AgentState
 
 class CoverageCore:
     def __init__(self, cfg):
@@ -31,8 +32,16 @@ class CoverageCore:
         # 2) Initialize coverage memory (fog-of-war / visited)
         self.coverage = self._init_coverage(self.world)
 
-        # 3) Spawn agents
-        self.agent_state = spawn_agents(self.cfg, self.world, rng=self.rng)
+
+        self.agents = ["drone_0", "drone_1", "car_0", "car_1", "car_2", "car_3"]
+        self.agent_state = {}
+
+        for a_id in self.agents:
+            if "drone" in a_id:
+                self.agent_state[a_id] = AgentState(x=start_x, y=start_y, battery=100.0, is_active=True)
+            else:
+                # Cars start inactive and "off-map"
+                self.agent_state[a_id] = AgentState(x=-1, y=-1, battery=0.0, is_active=False)
 
         # 4) Reset time + caches
         self.t = 0
@@ -77,50 +86,57 @@ class CoverageCore:
 
         # 7) Advance time
         self.t += 1
+    
 
     # ----- Observation / output getters -----
     def get_global_state(self):
 
         return
-    def get_critic_state(self):
-        # 1. Downsample the coverage map (100x100 -> 10x10)
-        # This gives the Critic a "heat map" of where work is left
-        reshaped = self.coverage.reshape(10, 10, 10, 10)
-        zone_coverage = reshaped.mean(axis=(1, 3)) 
+
+
+    def _define_obs_spaces(self):
+        # The 'image' is the 2-channel local patch (obstacles + coverage)
+        # The 'vector' contains [battery_level, x_norm, y_norm]
         
-        # 2. Get Agent Zone indices
-        drone_zone = (self.agent_state['drone'].pos // 10)
-        car_zone = (self.agent_state['car'].pos // 10)
+        drone_space = spaces.Dict({
+            "image": spaces.Box(low=0, high=1, shape=(2, 21, 21), dtype=np.float32),
+            "vector": spaces.Box(low=0, high=1, shape=(3,), dtype=np.float32)
+        })
         
-        # 3. Construct a feature vector for the Critic
-        # You can flatten this for a standard MLP Critic 
-        # or keep it as a graph for a GNN Critic.
-        state = {
-            "zone_map": zone_coverage.flatten(), # 100 values
-            "agent_locs": np.concatenate([drone_zone, car_zone]), # 4 values
-            "global_stats": [self.t / self.cfg.max_steps, self._coverage_percent()]
-        }
-        return np.concatenate(list(state.values()))
+        car_space = spaces.Dict({
+            "image": spaces.Box(low=0, high=1, shape=(2, 7, 7), dtype=np.float32),
+            "vector": spaces.Box(low=0, high=1, shape=(3,), dtype=np.float32)
+        })
+        
+        return {"drone_0": drone_space, "car_0": car_space}
+
+
 
     def _build_observation(self, agent_id):
         s = self.agent_state[agent_id]
+        cfg = self.cfg
         
-        # Define window size based on agent type
-        win_size = 21 if "drone" in agent_id else 7
+        # Determine window size
+        win_size = cfg.drone_fov if "drone" in agent_id else cfg.car_fov
         
-        # Extract views from the global "Truth" layers
-        local_obs = self._extract_local_patch(self.world.obstacles, s.pos, win_size)
+        # 1. Visual observations (the crops we made earlier)
+        local_map = self._extract_local_patch(self.world.obstacle_mask, s.pos, win_size)
         local_cov = self._extract_local_patch(self.coverage, s.pos, win_size)
+        image_data = np.stack([local_map, local_cov], axis=0).astype(np.float32)
         
-        # Stack them into a 'mini-image' for the Agent's CNN
-        # Shape will be (2, win_size, win_size)
-        visual_input = np.stack([local_obs, local_cov], axis=0)
+        # 2. Vector observations (the "Internal" state)
+        # Battery and Pos are normalized 0 to 1 for better NN convergence
+        vector_data = np.array([
+            s.battery / 100.0,
+            s.x / cfg.width,
+            s.y / cfg.height
+        ], dtype=np.float32)
         
         return {
-            "image": visual_input,
-            "coords": np.array([s.x / 100, s.y / 100], dtype=np.float32) # Normalized 0-1
+            "image": image_data,
+            "vector": vector_data
         }
-    
+
     def get_obs(self, agents):
         obs = {}
         for a in agents:
@@ -184,12 +200,15 @@ class CoverageCore:
 
     def _compute_terminations(self, alive_agents):
         # Termination usually means "task success" or "hard failure"
-        done = {}
-        if self._coverage_percent() >= self.cfg.target_coverage:
-            for a in alive_agents:
-                done[a] = True
-        # optionally: agent-specific failure conditions
-        return done
+        terminations = {}
+        for a in alive_agents:
+                s = self.agent_state[a]
+                # Agent is done if they crashed, ran out of battery, or map is 100%
+                if not s.is_active or self._coverage_percent() >= self.cfg.target_coverage:
+                    terminations[a] = True
+                else:
+                    terminations[a] = False
+        return terminations
 
     def _compute_truncations(self, alive_agents):
         # Truncation typically means time limit reached
@@ -222,6 +241,68 @@ class CoverageCore:
         self._terminations = {}
         self._truncations = {}
         self._infos = {}
+    
+def _apply_moves(self, actions, alive_agents):
+    move_map = {0: (0,0), 1: (-1,0), 2: (1,0), 3: (0,-1), 4: (0,1)}
 
-    # ... plus helpers: _decode_actions, _apply_moves,
-    #     _update_coverage_from_agents, _coverage_percent, etc.
+    for agent_id in alive_agents:
+        s = self.agent_state[agent_id]
+        if not s.is_active:
+            continue
+            
+        action = actions.get(agent_id, 0)
+        
+        # --- 1. HANDLE SPAWNING (Drone Only) ---
+        if "drone" in agent_id and action == 5:
+            available_car = next((c_id for c_id in self.agent_state 
+                                 if "car" in c_id and not self.agent_state[c_id].is_active 
+                                 and self.agent_state[c_id].battery == 0.0), None)
+            
+            can_spawn = (s.battery >= self.cfg.spawn_cost and 
+                         self.world.obstacle_mask[s.x, s.y] == 0)
+            
+            if available_car and can_spawn:
+                s.battery -= self.cfg.spawn_cost
+                target_car = self.agent_state[available_car]
+                target_car.x, target_car.y = s.x, s.y
+                target_car.pos = (s.x, s.y)
+                target_car.battery = 100.0
+                target_car.is_active = True
+                self._newly_spawned.append(available_car)
+            
+            # Drone spent its turn spawning; skip movement
+            self._handle_battery_and_status(s, is_moving=False)
+            continue 
+
+        # --- 2. HANDLE MOVEMENT (Car & Drone) ---
+        dx, dy = move_map.get(action, (0,0))
+        new_x = np.clip(s.x + dx, 0, self.cfg.width - 1)
+        new_y = np.clip(s.y + dy, 0, self.cfg.height - 1)
+
+        if "car" in agent_id:
+            if self.world.obstacle_mask[new_x, new_y] == 1:
+                # HIT OBSTACLE: Terminate immediately
+                s.is_active = False
+                s.collisions += 1
+            else:
+                s.x, s.y = new_x, new_y
+        else:
+            # Drone ignores obstacles
+            s.x, s.y = new_x, new_y
+
+        # --- 3. UPDATE STATUS ---
+        is_moving = (dx != 0 or dy != 0)
+        self._handle_battery_and_status(s, is_moving, agent_id)
+        s.pos = (s.x, s.y)
+
+def _handle_battery_and_status(self, s, is_moving, agent_id):
+    # Apply costs from your config
+    if "drone" in agent_id:
+        s.battery -= self.cfg.drone_move_cost if is_moving else self.cfg.drone_idle_cost
+    else:
+        s.battery -= self.cfg.car_move_cost if is_moving else 0
+
+    # Terminate if empty
+    if s.battery <= 0:
+        s.battery = 0
+        s.is_active = False

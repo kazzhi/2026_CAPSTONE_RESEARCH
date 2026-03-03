@@ -5,6 +5,7 @@ from pettingzoo.utils.env import ParallelEnv
 from .core import CoverageCore
 from .spaces import build_action_spaces, build_observation_spaces
 
+#add action spaces for drone and car
 
 def parallel_env(**kwargs):
     # 1) Build config with defaults
@@ -47,19 +48,20 @@ class CoverageParallelEnv(ParallelEnv):
 
         from gymnasium import spaces
 
-    self.observation_spaces = {
-        "drone": spaces.Dict({
-            "observation": spaces.Box(low=0, high=1, shape=(2, 21, 21), dtype=np.float32),
-            "position": spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
-        }),
-        "car": spaces.Dict({
-            "observation": spaces.Box(low=0, high=1, shape=(2, 7, 7), dtype=np.float32),
-            "position": spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
-        })
-    }
+        # self.observation_spaces = {
+        #     "drone": spaces.Dict({
+        #         "observation": spaces.Box(low=0, high=1, shape=(2, 21, 21), dtype=np.float32),
+        #         "position": spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
+        #     }),
+        #     "car": spaces.Dict({
+        #         "observation": spaces.Box(low=0, high=1, shape=(2, 7, 7), dtype=np.float32),
+        #         "position": spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
+        #     })
+        # }
 
     def observe(self, agent):
         return
+
 
 
     def reset(self, seed=None, options=None):
