@@ -6,24 +6,26 @@ def compute_rewards(cfg, world, coverage, agent_state, t, alive_agents, newly_co
 
     for agent_id in alive_agents:
         s = agent_state[agent_id]
-        r = shared_reward
         
         # 1. Massive Penalty for crashing (Car)
-        if "car" in agent_id and not s.is_active and s.collisions > 0:
-            r -= cfg.crash_penalty # e.g., -500
-            
-        # 2. Battery/Movement Penalty
-        if "drone" in agent_id:
-            # High penalty for movement encourages the drone to stay still 
-            # unless the car can't reach an area.
-            if s.is_active:
-                move_penalty = cfg.drone_step_penalty if s.last_action != 0 else 0
-                r -= move_penalty
+        r = shared_reward if s.is_active else 0.0
+        
+        # 1. Battery/Movement Penalties (Personal Cost)
+        if s.is_active:
+            if "drone" in agent_id:
+                # Drones are expensive to move
+                cost = cfg.drone_move_cost if s.is_moving else cfg.drone_idle_cost
+                r -= cost
             else:
-                # If battery ran out, perhaps a small penalty for failing to finish
-                if s.battery <= 0:
-                    r -= cfg.battery_out_penalty 
+                # Cars are cheap to move
+                r -= cfg.car_move_cost if s.is_moving else 0.0
+
+        # 2. Critical Failure Penalties
+        if "car" in agent_id and not s.is_active and s.collisions > 0:
+            # This only triggers on the EXACT frame the car crashes
+            r += cfg.crash_penalty 
 
         rewards[agent_id] = r
         
     return rewards
+        

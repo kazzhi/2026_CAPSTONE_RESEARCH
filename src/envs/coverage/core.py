@@ -1,10 +1,10 @@
-# core.py (pseudo-code)
 
 import numpy as np
 from .scenarios import make_map, spawn_agents
 from .rewards import compute_rewards  # optional
 from .render import render_world      # optional
 from .agent_types import AgentState
+from gymnasium import spaces
 
 class CoverageCore:
     def __init__(self, cfg):
@@ -18,9 +18,9 @@ class CoverageCore:
         self.t = 0
 
         # caches for step outputs
-        self._rewards = {}
-        self._terminations = {}
-        self._truncations = {}
+        self._rewards = {a: 0 for a in self.agents}
+        self._terminations = {a: False for a in self.agents}
+        self._truncations = {a: False for a in self.agents}
         self._infos = {}
 
     def reset(self, seed=None, options=None):
@@ -32,16 +32,19 @@ class CoverageCore:
         # 2) Initialize coverage memory (fog-of-war / visited)
         self.coverage = self._init_coverage(self.world)
 
+        self.total_reachable = np.sum(self.world.obstacle_mask == 0)
+        self.covered_count = 0
+
 
         self.agents = ["drone_0", "drone_1", "car_0", "car_1", "car_2", "car_3"]
         self.agent_state = {}
 
         for a_id in self.agents:
             if "drone" in a_id:
-                self.agent_state[a_id] = AgentState(x=start_x, y=start_y, battery=100.0, is_active=True)
+                self.agent_state[a_id] = AgentState(type = "drone", x=self.cfg.start_x, y=self.cfg.start_y, battery=100.0, is_active=True)
             else:
                 # Cars start inactive and "off-map"
-                self.agent_state[a_id] = AgentState(x=-1, y=-1, battery=0.0, is_active=False)
+                self.agent_state[a_id] = AgentState(type = "car", x=-1, y=-1, battery=0.0, is_active=False)
 
         # 4) Reset time + caches
         self.t = 0
@@ -55,17 +58,15 @@ class CoverageCore:
     
 
     def step(self, actions: dict, alive_agents: list):
+        self.t += 1
         self._clear_step_caches()
 
         # 1) Convert actions to intended moves/controls
-        intended = self._decode_actions(actions, alive_agents)
-
-        # 2) Apply physics / movement with collision handling
-        #    (grid: move N/E/S/W; continuous: integrate velocity)
+        intended = self._decode_actions(actions)
         self._apply_moves(intended, alive_agents)
 
-        # 3) Update coverage grid based on sensors/FOV
-        self._update_coverage_from_agents()
+        new_cells = self._update_coverage_from_agents()
+        current_percent = self._coverage_percent()
 
         # 4) Compute rewards (coverage gained, overlap penalty, etc.)
         self._rewards = compute_rewards(
@@ -75,41 +76,23 @@ class CoverageCore:
             agent_state=self.agent_state,
             t=self.t,
             alive_agents=alive_agents,
+            new_cells = new_cells
         )
 
         # 5) Compute termination/truncation
         self._terminations = self._compute_terminations(alive_agents)
-        self._truncations = self._compute_truncations(alive_agents)
+        self._truncations = {a: self.t >= self.cfg.max_steps for a in alive_agents}
 
         # 6) Compute infos (metrics) AFTER state updates
-        self._infos = self._compute_infos()
-
-        # 7) Advance time
-        self.t += 1
+        obs = {a: self._build_observation(a) for a in alive_agents}
+    
+        return obs, self._rewards, self._terminations, self._truncations, self._infos
     
 
     # ----- Observation / output getters -----
     def get_global_state(self):
 
         return
-
-
-    def _define_obs_spaces(self):
-        # The 'image' is the 2-channel local patch (obstacles + coverage)
-        # The 'vector' contains [battery_level, x_norm, y_norm]
-        
-        drone_space = spaces.Dict({
-            "image": spaces.Box(low=0, high=1, shape=(2, 21, 21), dtype=np.float32),
-            "vector": spaces.Box(low=0, high=1, shape=(3,), dtype=np.float32)
-        })
-        
-        car_space = spaces.Dict({
-            "image": spaces.Box(low=0, high=1, shape=(2, 7, 7), dtype=np.float32),
-            "vector": spaces.Box(low=0, high=1, shape=(3,), dtype=np.float32)
-        })
-        
-        return {"drone_0": drone_space, "car_0": car_space}
-
 
 
     def _build_observation(self, agent_id):
@@ -181,23 +164,6 @@ class CoverageCore:
         
         return patch
 
-    def _build_observation(self, agent):
-        # Typical coverage obs ideas:
-        # - local patch of obstacle grid
-        # - local patch of coverage grid (visited/fog)
-        # - relative positions of nearby agents
-        # - agent heading/battery/time remaining
-        s = self.agent_state[agent]
-        local_map = self._extract_local_patch(self.world.obstacles, s.pos)
-        local_cov = self._extract_local_patch(self.coverage, s.pos)
-        rel_agents = self._relative_agent_features(agent)
-        return {
-            "local_obstacles": local_map,
-            "local_coverage": local_cov,
-            "rel_agents": rel_agents,
-            "self_state": [s.x, s.y, s.heading],
-        }
-
     def _compute_terminations(self, alive_agents):
         # Termination usually means "task success" or "hard failure"
         terminations = {}
@@ -210,14 +176,6 @@ class CoverageCore:
                     terminations[a] = False
         return terminations
 
-    def _compute_truncations(self, alive_agents):
-        # Truncation typically means time limit reached
-        trunc = {}
-        if self.t >= self.cfg.max_steps:
-            for a in alive_agents:
-                trunc[a] = True
-        return trunc
-
     def _compute_infos(self):
         # Put metrics here, not only reward terms
         # Example:
@@ -227,11 +185,10 @@ class CoverageCore:
             infos[a] = {
                 "collisions": s.collisions,
                 "cells_covered_by_agent": s.covered_count,
-            }
-        return infos
 
-    def render(self, mode="human"):
-        return render_world(self.world, self.coverage, self.agent_state, mode=mode)
+            }
+        
+        return infos
 
     def close(self):
         pass
@@ -241,68 +198,101 @@ class CoverageCore:
         self._terminations = {}
         self._truncations = {}
         self._infos = {}
+        self._newly_spawned = []
     
-def _apply_moves(self, actions, alive_agents):
-    move_map = {0: (0,0), 1: (-1,0), 2: (1,0), 3: (0,-1), 4: (0,1)}
+    def _apply_moves(self, actions, alive_agents):
+        move_map = {0: (0,0), 1: (-1,0), 2: (1,0), 3: (0,-1), 4: (0,1)}
 
-    for agent_id in alive_agents:
-        s = self.agent_state[agent_id]
-        if not s.is_active:
-            continue
+        for agent_id in alive_agents:
+            s = self.agent_state[agent_id]
+            if not s.is_active:
+                continue
+                
+            action = actions.get(agent_id, 0)
             
-        action = actions.get(agent_id, 0)
-        
-        # --- 1. HANDLE SPAWNING (Drone Only) ---
-        if "drone" in agent_id and action == 5:
-            available_car = next((c_id for c_id in self.agent_state 
-                                 if "car" in c_id and not self.agent_state[c_id].is_active 
-                                 and self.agent_state[c_id].battery == 0.0), None)
-            
-            can_spawn = (s.battery >= self.cfg.spawn_cost and 
-                         self.world.obstacle_mask[s.x, s.y] == 0)
-            
-            if available_car and can_spawn:
-                s.battery -= self.cfg.spawn_cost
-                target_car = self.agent_state[available_car]
-                target_car.x, target_car.y = s.x, s.y
-                target_car.pos = (s.x, s.y)
-                target_car.battery = 100.0
-                target_car.is_active = True
-                self._newly_spawned.append(available_car)
-            
-            # Drone spent its turn spawning; skip movement
-            self._handle_battery_and_status(s, is_moving=False)
-            continue 
+            # --- 1. HANDLE SPAWNING (Drone Only) ---
+            if "drone" in agent_id and action == 5:
+                available_car = next((c_id for c_id in self.agent_state 
+                                    if "car" in c_id and not self.agent_state[c_id].is_active 
+                                    and self.agent_state[c_id].battery == 0.0), None)
+                
+                can_spawn = (s.battery >= self.cfg.spawn_cost and 
+                            self.world.obstacle_mask[s.x, s.y] == 0)
+                
+                if available_car and can_spawn:
+                    s.battery -= self.cfg.spawn_cost
+                    target_car = self.agent_state[available_car]
+                    target_car.x, target_car.y = s.x, s.y
+                    target_car.pos = (s.x, s.y)
+                    target_car.battery = 100.0
+                    target_car.is_active = True
+                    self._newly_spawned.append(available_car)
+                
+                # Drone spent its turn spawning; skip movement
+                self._handle_battery_and_status(s, is_moving=False)
+                continue 
 
-        # --- 2. HANDLE MOVEMENT (Car & Drone) ---
-        dx, dy = move_map.get(action, (0,0))
-        new_x = np.clip(s.x + dx, 0, self.cfg.width - 1)
-        new_y = np.clip(s.y + dy, 0, self.cfg.height - 1)
+            # --- 2. HANDLE MOVEMENT (Car & Drone) ---
+            dx, dy = move_map.get(action, (0,0))
+            new_x = np.clip(s.x + dx, 0, self.cfg.width - 1)
+            new_y = np.clip(s.y + dy, 0, self.cfg.height - 1)
 
-        if "car" in agent_id:
-            if self.world.obstacle_mask[new_x, new_y] == 1:
-                # HIT OBSTACLE: Terminate immediately
-                s.is_active = False
-                s.collisions += 1
+            if "car" in agent_id:
+                if self.world.obstacle_mask[new_x, new_y] == 1:
+                    # HIT OBSTACLE: Terminate immediately
+                    s.is_active = False
+                    s.collisions += 1
+                else:
+                    s.x, s.y = new_x, new_y
             else:
+                # Drone ignores obstacles
                 s.x, s.y = new_x, new_y
+
+            # --- 3. UPDATE STATUS ---
+            is_moving = (dx != 0 or dy != 0)
+            s.is_moving = is_moving
+            self._handle_battery_and_status(s, is_moving, agent_id)
+            s.pos = (s.x, s.y)
+
+    def _handle_battery_and_status(self, s, is_moving, agent_id):
+        # Apply costs from your config
+        if "drone" in s.agent_state[agent_id]:
+            s.battery -= self.cfg.drone_move_cost if is_moving else self.cfg.drone_idle_cost
         else:
-            # Drone ignores obstacles
-            s.x, s.y = new_x, new_y
+            s.battery -= self.cfg.car_move_cost if is_moving else 0
 
-        # --- 3. UPDATE STATUS ---
-        is_moving = (dx != 0 or dy != 0)
-        self._handle_battery_and_status(s, is_moving, agent_id)
-        s.pos = (s.x, s.y)
+        # Terminate if empty
+        if s.battery <= 0:
+            s.battery = 0
+            s.is_active = False
+    
+    def _init_coverage(self, world):
+        """Creates a zero-filled grid matching the map size."""
+        # 0 = Unvisited, 1 = Visited
+        return np.zeros((self.cfg.width, self.cfg.height), dtype=np.float32)
 
-def _handle_battery_and_status(self, s, is_moving, agent_id):
-    # Apply costs from your config
-    if "drone" in agent_id:
-        s.battery -= self.cfg.drone_move_cost if is_moving else self.cfg.drone_idle_cost
-    else:
-        s.battery -= self.cfg.car_move_cost if is_moving else 0
+    def _decode_actions(self, actions):
+        """
+        Converts raw RL actions (0,1,2...) into a standardized format.
+        Useful if you ever want to change the action mapping in one place.
+        """
+        return {a_id: int(act) for a_id, act in actions.items()}
 
-    # Terminate if empty
-    if s.battery <= 0:
-        s.battery = 0
-        s.is_active = False
+    def _update_coverage_from_agents(self):
+        """Updates the coverage grid based on where active agents are standing."""
+        for a_id, s in self.agent_state.items():
+            if s.is_active:
+                # Mark the current cell as covered
+                self.coverage[s.x, s.y] = 1.0
+                
+                if self.world.obstacle_mask[s.x, s.y] == 0 and self.coverage[s.x, s.y] == 0:
+                    self.coverage[s.x, s.y] = 1.0
+                    self.covered_count += 1
+                    newly_covered_this_step += 1
+        return newly_covered_this_step
+
+    def _coverage_percent(self):
+        """Calculates what percentage of the reachable map is covered."""
+        # Total cells minus obstacles
+        if self.total_reachable == 0: return 0.0
+        return self.covered_count / self.total_reachable

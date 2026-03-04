@@ -3,13 +3,15 @@
 from pettingzoo.utils import wrappers
 from pettingzoo.utils.env import ParallelEnv
 from .core import CoverageCore
-from .spaces import build_action_spaces, build_observation_spaces
+from .spaces import get_action_space, get_observation_space
+from .render import render
+from .config import CoverageConfig
 
 #add action spaces for drone and car
 
 def parallel_env(**kwargs):
     # 1) Build config with defaults
-    cfg = EnvConfig(**kwargs)
+    cfg = CoverageConfig(**kwargs)
 
     # 2) Construct the actual PettingZoo env wrapper object
     env = CoverageParallelEnv(cfg)
@@ -31,38 +33,25 @@ class CoverageParallelEnv(ParallelEnv):
 
 
     def __init__(self, cfg):
+
         self.cfg = cfg
 
-        # PettingZoo requires stable agent names
-        self.possible_agents = [f"agent_{i}" for i in range(cfg.num_agents)]
+        # FIX 1: Use the EXACT names defined in core.py
+        # Match your core.py: ["drone_0", "drone_1", "car_0", "car_1", "car_2", "car_3"]
+        self.possible_agents = ["drone_0", "drone_1", "car_0", "car_1", "car_2", "car_3"]
 
-        # Core simulator does the real work
         self.core = CoverageCore(cfg)
 
-        # Spaces must be dicts: {agent: space}
-        self.action_spaces = build_action_spaces(cfg, self.possible_agents)
-        self.observation_spaces = build_observation_spaces(cfg, self.possible_agents)
+        # FIX 2: Pass individual agent names to your spaces functions
+        self.action_spaces = {
+            a: get_action_space(a) for a in self.possible_agents
+        }
+        self.observation_spaces = {
+            a: get_observation_space(a, self.cfg) for a in self.possible_agents
+        }
 
-        # These are updated after reset/step
         self.agents = []
-
-        from gymnasium import spaces
-
-        # self.observation_spaces = {
-        #     "drone": spaces.Dict({
-        #         "observation": spaces.Box(low=0, high=1, shape=(2, 21, 21), dtype=np.float32),
-        #         "position": spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
-        #     }),
-        #     "car": spaces.Dict({
-        #         "observation": spaces.Box(low=0, high=1, shape=(2, 7, 7), dtype=np.float32),
-        #         "position": spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
-        #     })
-        # }
-
-    def observe(self, agent):
-        return
-
-
+        self.render_mode = cfg.render_mode if hasattr(cfg, 'render_mode') else "human"
 
     def reset(self, seed=None, options=None):
         # 1) Seed (PettingZoo expects determinism with seed)
@@ -72,9 +61,9 @@ class CoverageParallelEnv(ParallelEnv):
         self.agents = self.possible_agents[:]
 
         # 3) Produce initial observations and infos
-        obs = self.core.get_obs(self.agents)
-        infos = self.core.get_infos(self.agents)
-        return obs, infos
+        observations = {a: self.core._build_observation(a) for a in self.agents}
+            
+        return observations
 
     def step(self, actions: dict):
         # actions: {agent_name: action}
@@ -84,11 +73,11 @@ class CoverageParallelEnv(ParallelEnv):
         self.core.step(actions, alive_agents=self.agents)
 
         # 2) Pull results from core
-        observations = self.core.get_obs(self.agents)
-        rewards = self.core.get_rewards(self.agents)
-        terminations = self.core.get_terminations(self.agents)
-        truncations = self.core.get_truncations(self.agents)
-        infos = self.core.get_infos(self.agents)
+        observations = {a: self.core._build_observation(a) for a in self.agents}
+        rewards = self.core._rewards
+        terminations = self.core._terminations
+        truncations = self.core._truncations
+        infos = {a: {} for a in self.agents}
 
         # 3) Update self.agents: remove terminated/truncated agents
         self.agents = [

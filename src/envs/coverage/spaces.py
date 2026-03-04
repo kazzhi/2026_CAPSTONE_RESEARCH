@@ -23,3 +23,4 @@ def get_action_space(agent_id):
     else:
         # Cars cannot spawn anything
         return spaces.Discrete(5)
+

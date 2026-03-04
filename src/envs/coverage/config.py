@@ -2,9 +2,13 @@ from dataclasses import dataclass
 
 @dataclass
 class CoverageConfig:
+    #Map specs
+    max_map_attempts: int = 10
     width: int = 100
     height: int = 100
-    obstacle_density: float = 19.5
+    obstacle_density: float = 0.195
+    start_x: int = 0
+    start_y: int = 0
 
     #Drone
     drone_fov: int = 21
@@ -15,7 +19,8 @@ class CoverageConfig:
 
     #Car
     car_fov: int = 7
-    car_move_cost: float = 0.0
+    car_move_cost: float = 0.005
+
 
     #RL REWARDS !!! NEEDS TWEAKINGG
     reward_per_cell: float = 1.0
@@ -23,6 +28,8 @@ class CoverageConfig:
     step_penalty: float = -0.01
     target_coverage: float = 0.95
     max_steps: int = 1000
+    battery_out_penalty: float = -500.0
+
 
     
 
