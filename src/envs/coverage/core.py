@@ -5,6 +5,8 @@ from .rewards import compute_rewards  # optional
 from .render import render_world      # optional
 from .agent_types import AgentState
 from gymnasium import spaces
+from .render import MatplotlibGridRenderer, RenderConfig
+
 
 class CoverageCore:
     def __init__(self, cfg):
@@ -17,29 +19,38 @@ class CoverageCore:
         self.agent_state = {}        # agent -> state object
         self.t = 0
 
+        self.total_reachable = 0
+        self.covered_count = 0
+        self.possible_agents = []
+
         # caches for step outputs
-        self._rewards = {a: 0 for a in self.agents}
-        self._terminations = {a: False for a in self.agents}
-        self._truncations = {a: False for a in self.agents}
+        self._rewards = {}
+        self._terminations = {}
+        self._truncations = {}
         self._infos = {}
+        self._newly_spawned = []
+
+        
+        self._renderer = MatplotlibGridRenderer(
+            height=self.cfg.height,
+            width=self.cfg.width,
+            cfg=RenderConfig(cell_px=8)
+        )
 
     def reset(self, seed=None, options=None):
         self.rng = np.random.default_rng(seed)
 
         # 1) Build scenario/map
         self.world = make_map(self.cfg, rng=self.rng, options=options)
-
-        # 2) Initialize coverage memory (fog-of-war / visited)
         self.coverage = self._init_coverage(self.world)
 
         self.total_reachable = np.sum(self.world.obstacle_mask == 0)
         self.covered_count = 0
 
-
-        self.agents = ["drone_0", "drone_1", "car_0", "car_1", "car_2", "car_3"]
+        self.possible_agents = ["drone_0","drone_1","car_0","car_1","car_2","car_3"]
         self.agent_state = {}
 
-        for a_id in self.agents:
+        for a_id in self.possible_agents:
             if "drone" in a_id:
                 self.agent_state[a_id] = AgentState(type = "drone", x=self.cfg.start_x, y=self.cfg.start_y, battery=100.0, is_active=True)
             else:
@@ -55,6 +66,8 @@ class CoverageCore:
 
         # 6) Initialize infos for t=0
         self._infos = self._compute_infos()
+
+        return 
     
 
     def step(self, actions: dict, alive_agents: list):
@@ -65,8 +78,7 @@ class CoverageCore:
         intended = self._decode_actions(actions)
         self._apply_moves(intended, alive_agents)
 
-        new_cells = self._update_coverage_from_agents()
-        current_percent = self._coverage_percent()
+        new_cells, overlap_cells = self._update_coverage_from_agents()
 
         # 4) Compute rewards (coverage gained, overlap penalty, etc.)
         self._rewards = compute_rewards(
@@ -76,7 +88,8 @@ class CoverageCore:
             agent_state=self.agent_state,
             t=self.t,
             alive_agents=alive_agents,
-            new_cells = new_cells
+            new_cells = new_cells,
+            overlap_cells = overlap_cells
         )
 
         # 5) Compute termination/truncation
@@ -85,6 +98,7 @@ class CoverageCore:
 
         # 6) Compute infos (metrics) AFTER state updates
         obs = {a: self._build_observation(a) for a in alive_agents}
+
     
         return obs, self._rewards, self._terminations, self._truncations, self._infos
     
@@ -159,8 +173,7 @@ class CoverageCore:
         nx, ny = x + radius, y + radius
         
         # 3. Slice the window
-        patch = padded_layer[nx - radius : nx + radius + 1, 
-                            ny - radius : ny + radius + 1]
+        patch = padded_layer[ny-radius:ny+radius+1, nx-radius:nx+radius+1]
         
         return patch
 
@@ -216,11 +229,11 @@ class CoverageCore:
                                     if "car" in c_id and not self.agent_state[c_id].is_active 
                                     and self.agent_state[c_id].battery == 0.0), None)
                 
-                can_spawn = (s.battery >= self.cfg.spawn_cost and 
-                            self.world.obstacle_mask[s.x, s.y] == 0)
+                can_spawn = (s.battery >= self.cfg.drone_spawn_cost and 
+                            self.world.obstacle_mask[s.y, s.x] == 0)
                 
                 if available_car and can_spawn:
-                    s.battery -= self.cfg.spawn_cost
+                    s.battery -= self.cfg.drone_spawn_cost
                     target_car = self.agent_state[available_car]
                     target_car.x, target_car.y = s.x, s.y
                     target_car.pos = (s.x, s.y)
@@ -238,7 +251,7 @@ class CoverageCore:
             new_y = np.clip(s.y + dy, 0, self.cfg.height - 1)
 
             if "car" in agent_id:
-                if self.world.obstacle_mask[new_x, new_y] == 1:
+                if self.world.obstacle_mask[new_y, new_x] == 1:
                     # HIT OBSTACLE: Terminate immediately
                     s.is_active = False
                     s.collisions += 1
@@ -256,7 +269,7 @@ class CoverageCore:
 
     def _handle_battery_and_status(self, s, is_moving, agent_id):
         # Apply costs from your config
-        if "drone" in s.agent_state[agent_id]:
+        if "drone" in agent_id :
             s.battery -= self.cfg.drone_move_cost if is_moving else self.cfg.drone_idle_cost
         else:
             s.battery -= self.cfg.car_move_cost if is_moving else 0
@@ -280,19 +293,41 @@ class CoverageCore:
 
     def _update_coverage_from_agents(self):
         """Updates the coverage grid based on where active agents are standing."""
+        newly_covered_this_step = 0
+        overlap_cells = 0
         for a_id, s in self.agent_state.items():
             if s.is_active:
-                # Mark the current cell as covered
-                self.coverage[s.x, s.y] = 1.0
                 
-                if self.world.obstacle_mask[s.x, s.y] == 0 and self.coverage[s.x, s.y] == 0:
-                    self.coverage[s.x, s.y] = 1.0
+                if self.world.obstacle_mask[s.y, s.x] == 0 and self.coverage[s.y, s.x] == 0:
+                    self.coverage[s.y, s.x] = 1.0
                     self.covered_count += 1
                     newly_covered_this_step += 1
-        return newly_covered_this_step
+                elif self.world.obstacle_mask[s.y, s.x] == 0 and self.coverage[s.y, s.x] == 1:
+                    overlap_cells += 1
+        return (newly_covered_this_step, overlap_cells)
 
     def _coverage_percent(self):
         """Calculates what percentage of the reachable map is covered."""
         # Total cells minus obstacles
         if self.total_reachable == 0: return 0.0
         return self.covered_count / self.total_reachable
+    
+    def render_frame(self, mode):
+
+        step_reward = float(sum(self._rewards.values())) if hasattr(self, "_rewards") else None
+
+        infos = {"__common__": {
+            "t": getattr(self, "t", 0),
+            "coverage": float(self.coverage.mean()) if hasattr(self, "coverage") else 0.0,
+        }}
+
+        return self._renderer.render_frame(
+            obstacle_mask=self.world.obstacle_mask,
+            coverage=self.coverage,
+            agent_state=self.agent_state,
+            step_reward=step_reward,
+            infos=infos,
+            drone_fov=self.cfg.drone_fov,  # 21
+            car_fov=self.cfg.car_fov       # 7
+        )
+    

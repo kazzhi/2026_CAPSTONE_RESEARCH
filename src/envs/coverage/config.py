@@ -9,6 +9,7 @@ class CoverageConfig:
     obstacle_density: float = 0.195
     start_x: int = 0
     start_y: int = 0
+    target_coverage: float = 95.0
 
     #Drone
     drone_fov: int = 21
@@ -29,6 +30,7 @@ class CoverageConfig:
     target_coverage: float = 0.95
     max_steps: int = 1000
     battery_out_penalty: float = -500.0
+    overlap_penalty: float = -1.0
 
 
     

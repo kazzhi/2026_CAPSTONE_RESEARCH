@@ -1,8 +1,8 @@
-def compute_rewards(cfg, world, coverage, agent_state, t, alive_agents, newly_covered_count):
+def compute_rewards(cfg, world, coverage, agent_state, t, alive_agents, newly_covered_count, overlap_cells):
     rewards = {}
     
     # Global Shared Reward for progress
-    shared_reward = newly_covered_count * cfg.reward_per_cell 
+    shared_reward = (newly_covered_count * cfg.reward_per_cell) - (overlap_cells * cfg.overlap_penalty)
 
     for agent_id in alive_agents:
         s = agent_state[agent_id]

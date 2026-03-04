@@ -51,33 +51,32 @@ class CoverageParallelEnv(ParallelEnv):
         }
 
         self.agents = []
-        self.render_mode = cfg.render_mode if hasattr(cfg, 'render_mode') else "human"
+        self.render_mode = "rgb_array"
 
     def reset(self, seed=None, options=None):
         # 1) Seed (PettingZoo expects determinism with seed)
         self.core.reset(seed=seed, options=options)
 
         # 2) Alive agents list is set on reset
-        self.agents = self.possible_agents[:]
+        self.agents = [a for a in self.possible_agents if "drone" in a]
 
         # 3) Produce initial observations and infos
         observations = {a: self.core._build_observation(a) for a in self.agents}
+        infos = {a: {} for a in self.agents}
             
-        return observations
+        return observations, infos
 
     def step(self, actions: dict):
         # actions: {agent_name: action}
         # (Optional) validate keys: must match current self.agents
 
         # 1) Advance simulation one timestep
-        self.core.step(actions, alive_agents=self.agents)
+        observations, rewards, terminations, truncations, infos = self.core.step(actions, alive_agents=self.agents)
 
         # 2) Pull results from core
-        observations = {a: self.core._build_observation(a) for a in self.agents}
-        rewards = self.core._rewards
-        terminations = self.core._terminations
-        truncations = self.core._truncations
-        infos = {a: {} for a in self.agents}
+        for new_agent in self.core._newly_spawned:
+            if new_agent not in self.agents:
+                self.agents.append(new_agent)
 
         # 3) Update self.agents: remove terminated/truncated agents
         self.agents = [
@@ -88,7 +87,8 @@ class CoverageParallelEnv(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
     def render(self):
-        return self.core.render(mode=self.render_mode)
+
+        return self.core.render_frame(mode=self.render_mode)
 
     def close(self):
         self.core.close()
