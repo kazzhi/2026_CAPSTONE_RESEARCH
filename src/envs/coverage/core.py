@@ -1,11 +1,11 @@
 
 import numpy as np
-from .scenarios import make_map, spawn_agents
+from .scenarios import make_map
 from .rewards import compute_rewards  # optional
-from .render import render_world      # optional
+# from .render import render_world      # optional
 from .agent_types import AgentState
-from gymnasium import spaces
-from .render import MatplotlibGridRenderer, RenderConfig
+# from gymnasium import spaces
+# from .render import MatplotlibGridRenderer, RenderConfig
 
 
 class CoverageCore:

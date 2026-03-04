@@ -6,10 +6,8 @@ from dataclasses import dataclass
 class World:
     width: int
     height: int
-    obstacle_mask: np.ndarray       # True = blocked
-    # optional precomputations:
-    # free_cells: list[(x,y)]
-    # components: labels for connectivity
+    obstacle_mask: "np.ndarray"       
+
 
 
 def make_map(cfg, rng, options=None) -> World:

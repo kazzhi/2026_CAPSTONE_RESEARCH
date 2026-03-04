@@ -1,0 +1,18 @@
+# src/training/config/env_config/coverage_mission.yaml
+
+env: coverage_mission
+
+# MARLlib uses this to know it's PettingZoo parallel env
+env_class: pettingzoo
+
+# Whether to use cooperative rewards; you can keep force_coop=True in code too
+force_coop: true
+
+# optional metadata
+agent_name_style: prefix  # relies on names like drone_0, car_0
+
+# Default env args (you can override via env_args in code)
+env_args:
+  width: 100
+  height: 100
+  obstacle_density: 0.195

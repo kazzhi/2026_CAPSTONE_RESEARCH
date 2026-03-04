@@ -4,8 +4,9 @@ from pettingzoo.utils import wrappers
 from pettingzoo.utils.env import ParallelEnv
 from .core import CoverageCore
 from .spaces import get_action_space, get_observation_space
-from .render import render
+# from .render import render
 from .config import CoverageConfig
+from gym import spaces
 
 #add action spaces for drone and car
 
@@ -29,7 +30,7 @@ class CoverageParallelEnv(ParallelEnv):
         "is_parallelizable": True,
         "render_fps": 10,
     }
-    from gymnasium import spaces
+
 
 
     def __init__(self, cfg):
