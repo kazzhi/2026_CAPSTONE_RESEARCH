@@ -70,7 +70,7 @@ class CoverageCore:
         self._clear_step_caches()
 
         # 5) Optionally compute initial coverage from spawn positions
-        self._update_coverage_from_agents()
+        # self._update_coverage_from_agents()
 
         # 6) Initialize infos for t=0
         self._infos = self._compute_infos()
@@ -86,7 +86,7 @@ class CoverageCore:
         intended = self._decode_actions(actions)
         spawns_by_drones = self._apply_moves(intended, alive_agents)
 
-        new_cells, overlap_cells = self._update_coverage_from_agents()
+        new_cells, agent_step_stats = self._update_coverage_from_agents()
 
         # 4) Compute rewards (coverage gained, overlap penalty, etc.)
         self._rewards = compute_rewards(
@@ -97,13 +97,14 @@ class CoverageCore:
             t=self.t,
             alive_agents=alive_agents,
             newly_covered_count= new_cells,
-            overlap_cells = overlap_cells,
+            agent_step_stats = agent_step_stats,
             spawn_info = spawns_by_drones
         )
 
         # 5) Compute termination/truncation
         self._terminations = self._compute_terminations(alive_agents)
         self._truncations = {a: self.t >= self.cfg.max_steps for a in alive_agents}
+        self._infos = self._compute_infos()
 
         # 6) Compute infos (metrics) AFTER state updates
         obs = {a: self._build_observation(a) for a in alive_agents}
@@ -209,7 +210,7 @@ class CoverageCore:
         # Put metrics here, not only reward terms
         # Example:
         global_cov = self._coverage_percent()
-        infos = {"__common__": {"coverage": global_cov, "t": self.t}}
+        infos = {"__common__": {"coverage": global_cov, "covered_count":self.covered_count, "t": self.t}}
         for a, s in self.agent_state.items():
             infos[a] = {
                 "collisions": s.collisions,
@@ -250,6 +251,7 @@ class CoverageCore:
                             self.world.obstacle_mask[s.y, s.x] == 0)
                 
                 if available_car and can_spawn:
+                    # print(f"CAR SPAWNED AT {s.x}, {s.y} WITH ID {available_car}")
                     s.battery -= self.cfg.drone_spawn_cost
                     target_car = self.agent_state[available_car]
                     target_car.x, target_car.y = s.x, s.y
@@ -276,6 +278,7 @@ class CoverageCore:
                     # HIT OBSTACLE: Terminate immediately
                     s.is_active = False
                     s.collisions += 1
+   
                 else:
                     s.x, s.y = new_x, new_y
             else:
@@ -304,7 +307,7 @@ class CoverageCore:
     def _init_coverage(self, world):
         """Creates a zero-filled grid matching the map size."""
         # 0 = Unvisited, 1 = Visited
-        return np.zeros((self.cfg.width, self.cfg.height), dtype=np.float32)
+        return np.zeros((self.cfg.height, self.cfg.width), dtype=np.float32)
 
     def _decode_actions(self, actions):
         """
@@ -316,7 +319,8 @@ class CoverageCore:
     def _update_coverage_from_agents(self):
         """Updates the coverage grid based on where active agents are standing."""
         newly_covered_this_step = 0
-        overlap_cells = 0
+    
+        agent_step_stats = {a_id: {"new": 0, "overlap": 0} for a_id in self.agent_state}
         for a_id, s in self.agent_state.items():
             if s.is_active:
                 
@@ -324,32 +328,60 @@ class CoverageCore:
                     self.coverage[s.y, s.x] = 1.0
                     self.covered_count += 1
                     newly_covered_this_step += 1
+                    agent_step_stats[a_id]["new"] += 1
                 elif self.world.obstacle_mask[s.y, s.x] == 0 and self.coverage[s.y, s.x] == 1:
-                    overlap_cells += 1
-        return (newly_covered_this_step, overlap_cells)
+                    agent_step_stats[a_id]["overlap"] += 1
+    
+        
+        return (newly_covered_this_step, agent_step_stats)
 
     def _coverage_percent(self):
         """Calculates what percentage of the reachable map is covered."""
         # Total cells minus obstacles
         if self.total_reachable == 0: return 0.0
-        return self.covered_count / self.total_reachable
+        return (float(self.covered_count) / float(self.total_reachable)) * 100
     
-    def render_frame(self, mode):
+    # def render_frame(self, mode):
 
-        step_reward = float(sum(self._rewards.values())) if hasattr(self, "_rewards") else None
+    #     step_reward = float(sum(self._rewards.values())) if hasattr(self, "_rewards") else None
 
-        infos = {"__common__": {
-            "t": getattr(self, "t", 0),
-            "coverage": float(self.coverage.mean()) if hasattr(self, "coverage") else 0.0,
-        }}
+    #     infos = {"__common__": {
+    #         "t": getattr(self, "t", 0),
+    #         "coverage": float(self.coverage.mean()) if hasattr(self, "coverage") else 0.0,
+    #     }}
+
+    #     return self._renderer.render_frame(
+    #         obstacle_mask=self.world.obstacle_mask,
+    #         coverage=self.coverage,
+    #         agent_state=self.agent_state,
+    #         step_reward=step_reward,
+    #         infos=infos,
+    #         drone_fov=self.cfg.drone_fov,  # 21
+    #         car_fov=self.cfg.car_fov       # 7
+    #     )
+    
+    # core.py - Replace the existing render_frame method
+# core.py
+
+    def render_frame(self):
+        # Initialize renderer if it doesn't exist
+        if not hasattr(self, "_renderer") or self._renderer is None:
+            from .render import MatplotlibGridRenderer, RenderConfig
+            self._renderer = MatplotlibGridRenderer(
+                height=self.cfg.height,
+                width=self.cfg.width,
+                cfg=RenderConfig(cell_px=8)
+            )
+
+        # Use actual rewards if available, otherwise 0
+        step_reward = float(sum(self._rewards.values())) if self._rewards else 0.0
 
         return self._renderer.render_frame(
             obstacle_mask=self.world.obstacle_mask,
             coverage=self.coverage,
             agent_state=self.agent_state,
             step_reward=step_reward,
-            infos=infos,
-            drone_fov=self.cfg.drone_fov,  # 21
-            car_fov=self.cfg.car_fov       # 7
+            infos=self._infos,
+            drone_fov=self.cfg.drone_fov,
+            car_fov=self.cfg.car_fov
         )
-    

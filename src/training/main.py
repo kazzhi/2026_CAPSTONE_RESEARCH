@@ -3,13 +3,79 @@ from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
+import matplotlib.pyplot as plt
+import os
 
 from src.envs.coverage.env import env_creator, CoverageParallelEnv, ParallelEnv, parallel_env
 from src.envs.coverage.model import DroneCarHybridModel
 from ray.rllib.env.wrappers.pettingzoo_env import ParallelPettingZooEnv
 
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
+# from .callbacks import CoverageCallbacks
 
-# 1. Register the Model
+class CoverageCallbacks(DefaultCallbacks):
+    def on_episode_start(self, *, worker, base_env, policies, episode, **kwargs):
+        # Initialize the list so 'on_episode_step' doesn't throw a KeyError
+        episode.user_data["frames"] = []
+        episode.user_data["coverage_pct"] = 0.0
+        episode.user_data["covered_cells"] = 0
+        
+    def on_episode_step(self, *, worker, base_env, policies, episode, **kwargs):
+        agents = episode.get_agents()
+        if not agents:
+            return
+
+        # agents can be ["drone_0", ...] or [("drone_0", ...)] depending on RLlib internals
+        a0 = agents[0]
+        agent_id = a0 if isinstance(a0, str) else a0[0]
+
+        info = episode.last_info_for(agent_id)
+        if not info:
+            return
+
+        if "coverage_pct" in info:
+            episode.user_data["coverage_pct"] = info["coverage_pct"]
+        if "covered_cells" in info:
+            episode.user_data["covered_cells"] = info["covered_cells"]
+        
+        raw_env = base_env.get_sub_environments()[0]
+        
+        # Only record frames for the first worker to save memory/IO
+        if episode.length %100 == 0:
+            if worker.worker_index <= 1:
+                frame = raw_env.render()
+                episode.user_data["frames"].append(frame)
+
+        
+
+    def on_episode_end(self, *, worker, base_env, policies, episode, **kwargs):
+        pct = float(episode.user_data.get("coverage_pct", 0.0))
+        count = int(episode.user_data.get("covered_cells", 0))
+        print(f"--- EPISODE ENDED | FINAL COVERAGE: {pct:.2f}% and {count} cells ---")
+
+        # Optional: log to TensorBoard as custom metrics
+        episode.custom_metrics["final_coverage_pct"] = pct
+        episode.custom_metrics["final_covered_cells"] = count
+        
+        if worker.worker_index <= 1 and "frames" in episode.user_data:
+            frames = episode.user_data["frames"]
+            if not frames:
+                return
+
+            # Save the final state as a PNG using Matplotlib
+            # This avoids the need for Pillow
+            plt.figure(figsize=(8, 8))
+            plt.imshow(frames[-1])
+            plt.axis('off')
+            plt.title(f"End of Episode {episode.episode_id}")
+            
+            os.makedirs("render_outputs", exist_ok=True)
+            plt.savefig(f"render_outputs/episode_{episode.episode_id}_final.png")
+            plt.close()
+
+            print(f"Saved render for episode {episode.episode_id}")
+        
+        
 ModelCatalog.register_custom_model("drone_car_cnn", DroneCarHybridModel)
 
 # 2. Register the Env
@@ -42,7 +108,8 @@ config = (
         enable_rl_module_and_learner=False,
         enable_env_runner_and_connector_v2=False
     )
-    .environment("coverage_v0", env_config={"width": 100, "height": 100})
+    .environment("coverage_v0", env_config={"width": 30, "height": 30})
+    .callbacks(CoverageCallbacks)
     .framework("torch")
     .multi_agent(
         policies={
@@ -53,12 +120,18 @@ config = (
             "drone_policy" if "drone" in agent_id else "car_policy",
     )
     .training(
-        gamma=0.99,
+        gamma=0.999,
         lr=1e-4,
         train_batch_size=4000,
+        entropy_coeff=0.05, 
+        # Optional: Gradually reduce entropy as they learn
+        # entropy_coeff_schedule=[[0, 0.05], [200000, 0.001]],
+        kl_coeff=0.2,
+        clip_param=0.3,
+        num_sgd_iter=10,
         
     )
-    .env_runners(num_env_runners=0) # Uses more CPUs for data collection
+    .env_runners(num_env_runners=5) # Uses more CPUs for data collection
 )
 
 config.sgd_minibatch_size=12

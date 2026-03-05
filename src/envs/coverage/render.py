@@ -17,10 +17,10 @@ def _rgb(r, g, b) -> np.ndarray:
     return np.array([r, g, b], dtype=np.float32) / 255.0
 
 # Colors requested
-COLOR_OBSTACLE   = _rgb(0, 0, 0)         # black
-COLOR_BG_FREE    = _rgb(46, 101, 279)      # blue
+COLOR_OBSTACLE   = _rgb(51, 49, 49)         # black
+COLOR_BG_FREE    = _rgb(156, 208, 240)      # blue
 COLOR_COVERED    = _rgb(255, 255, 255)   # white
-COLOR_SIGHT      = _rgb(158, 232, 255)   # light blue
+COLOR_SIGHT      = _rgb(255, 0, 255)   # light blue
 COLOR_DRONE      = _rgb(255, 0, 0)       # red
 COLOR_CAR        = _rgb(255, 220, 0)     # yellow
 
@@ -53,7 +53,7 @@ def _square_slice(cx: int, cy: int, radius: int, H: int, W: int) -> Tuple[slice,
 class RenderConfig:
     cell_px: int = 8                 # pixel size per cell in output frame
     sight_alpha: float = 0.35        # blending for sight overlay
-    title_fontsize: int = 10
+    title_fontsize: int = 6
     agent_marker_scale: float = 1.2  # marker size relative to cell_px
 
 
@@ -69,7 +69,7 @@ class MatplotlibGridRenderer:
         self.cfg = cfg or RenderConfig()
 
         dpi = 100
-        fig_w_px = max(200, self.W * self.cfg.cell_px)
+        fig_w_px = max(200, self.W * self.cfg.cell_px + 90)
         fig_h_px = max(200, self.H * self.cfg.cell_px + 50)  # extra for title text
         fig_w_in = fig_w_px / dpi
         fig_h_in = fig_h_px / dpi
@@ -77,8 +77,9 @@ class MatplotlibGridRenderer:
         self.fig = Figure(figsize=(fig_w_in, fig_h_in), dpi=dpi)
         self.canvas = FigureCanvas(self.fig)
 
+        
         # One axes for the grid
-        self.ax = self.fig.add_axes([0.02, 0.02, 0.96, 0.90])  # leave top space
+        self.ax = self.fig.add_axes([0.02, 0.02, 0.96, 0.82])  # leave top space
         self.ax.set_axis_off()
 
         # Prepare the image artist (updated each frame)
@@ -91,8 +92,8 @@ class MatplotlibGridRenderer:
         )
 
         # Scatter artists for agents (updated each frame)
-        self.drone_scatter = self.ax.scatter([], [], s=1, c=[COLOR_DRONE], marker="s")
-        self.car_scatter   = self.ax.scatter([], [], s=1, c=[COLOR_CAR], marker="s")
+        self.drone_scatter = self.ax.scatter([], [], s=1, c=[COLOR_DRONE], marker="o")
+        self.car_scatter   = self.ax.scatter([], [], s=1, c=[COLOR_CAR], marker="h")
 
     def render_frame(
         self,
@@ -102,7 +103,7 @@ class MatplotlibGridRenderer:
         *,
         step_reward: Optional[float] = None,
         infos: Optional[Dict[str, Any]] = None,
-        drone_fov: int = 21,
+        drone_fov: int = 11,
         car_fov: int = 7,
     ) -> np.ndarray:
         """
@@ -146,7 +147,7 @@ class MatplotlibGridRenderer:
             y = int(getattr(s, "y"))
             a_type = getattr(s, "type", "car")
 
-            win = drone_fov if a_type == "drone" else car_fov
+            win = drone_fov if "drone" in aid.lower() or a_type == "drone" else car_fov
             radius = win // 2
 
             ys, xs = _square_slice(x, y, radius, self.H, self.W)
@@ -159,6 +160,8 @@ class MatplotlibGridRenderer:
                 img[ys, xs] = region
 
         # Update the grid image
+        # Add this before self.im.set_data(img)
+        img = np.clip(img, 0.0, 1.0) 
         self.im.set_data(img)
 
         # Agents on top: drones red, cars yellow
@@ -217,11 +220,11 @@ class MatplotlibGridRenderer:
                 if "t" in common:
                     parts.append(f"t={common['t']}")
 
-        self.fig.suptitle(" | ".join(parts), fontsize=self.cfg.title_fontsize, y=0.98)
+        self.fig.suptitle(" | ".join(parts), fontsize=self.cfg.title_fontsize, y=0.90)
 
         # Render to RGB array
         self.canvas.draw()
-        w, h = self.canvas.get_width_height()
-        buf = np.frombuffer(self.canvas.tostring_rgb(), dtype=np.uint8)
-        frame = buf.reshape((h, w, 3))
-        return frame.copy()  # copy so it won't be tied to the canvas buffer
+        buf = np.array(self.canvas.buffer_rgba()) 
+        # Discard the Alpha channel to get RGB
+        frame = buf[:, :, :3]
+        return frame.copy() # copy so it won't be tied to the canvas buffer

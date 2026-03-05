@@ -29,7 +29,14 @@ class CoverageParallelEnv(ParallelEnv):
         self.core.reset(seed=seed, options=options)
         self.agents = [a for a in self.possible_agents if "drone" in a]
         observations = {a: self.core._build_observation(a) for a in self.agents}
-        infos = {a: {} for a in self.agents}
+        
+        pct = float(self.core._coverage_percent())
+        count = int(self.core.covered_count)
+
+        infos = {a: {"coverage_pct": pct, "covered_cells": count} for a in observations.keys()}
+        infos["__common__"] = {"coverage_pct": pct, "covered_cells": count}
+
+
         return observations, infos
 
     def step(self, actions):
@@ -40,14 +47,52 @@ class CoverageParallelEnv(ParallelEnv):
                 self.agents.append(new_agent)
 
         self.agents = [a for a in self.agents if not (term.get(a, False) or trunc.get(a, False))]
-        return obs, rew, term, trunc, infos
+        
+        
+        # formatted_infos = {}
+        # #global_coverage = float(infos.get("__common__", {}).get("coverage", 0.0))
+        # global_coverage = self.core._coverage_percent()
+        # global_cov_count = int(self.core.covered_count)
+
+        # for agent_id in obs.keys():
+        #     # Start with the agent's specific info from core (collisions, etc.)
+        #     agent_info = infos.get(agent_id, {}).copy()
+            
+        #     # Inject the global coverage metric for RLlib logging
+        #     agent_info["rllib_coverage_metric"] = global_coverage
+        #     agent_info["map_covered_count"] = global_cov_count
+            
+        #     formatted_infos[agent_id] = agent_info
+        pct = float(self.core._coverage_percent())
+        count = int(self.core.covered_count)
+
+        # Keep existing per-agent infos if you had them, but only for alive agents
+        fixed_infos = {}
+
+        # Optional global info
+        fixed_infos["__common__"] = {"coverage_pct": pct, "covered_cells": count}
+
+        for a in obs.keys():
+            d = infos.get(a, {})  # keep whatever core.step already placed
+            d["coverage_pct"] = pct
+            d["covered_cells"] = count
+            fixed_infos[a] = d
+        
+        infos["__common__"]["t"] = self.core.t
+        infos["__common__"]["alive_agents"] = list(self.agents)
+        infos["__common__"]["drone_battery"] = {a: self.core.agent_state[a].battery for a in self.agents if "drone" in a}
+        # fixed_infos["__common__"]["final_coverage_pct"] = pct
+        # fixed_infos["__common__"]["final_covered_cells"] = count
+        
+        return obs, rew, term, trunc, fixed_infos
     
     def observation_space(self, agent):
         return self.observation_spaces[agent]
 
     def action_space(self, agent):
         return self.action_spaces[agent]
-
+    def render(self, mode='rgb_array'):
+        return self.core.render_frame()
 # Helper function for RLlib registration
 def env_creator(config):
     # config here is the dictionary passed from RLlib
