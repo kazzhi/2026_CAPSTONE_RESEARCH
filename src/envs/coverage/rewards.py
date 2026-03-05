@@ -1,4 +1,4 @@
-def compute_rewards(cfg, world, coverage, agent_state, t, alive_agents, newly_covered_count, overlap_cells):
+def compute_rewards(cfg, world, coverage, agent_state, t, alive_agents, newly_covered_count, overlap_cells, spawn_info):
     rewards = {}
     
     # Global Shared Reward for progress
@@ -16,6 +16,10 @@ def compute_rewards(cfg, world, coverage, agent_state, t, alive_agents, newly_co
                 # Drones are expensive to move
                 cost = cfg.drone_move_cost if s.is_moving else cfg.drone_idle_cost
                 r -= cost
+                
+                num_spawns = spawn_info.get(agent_id, 0)
+                if num_spawns > 0:
+                    r += cfg.car_spawn_reward * num_spawns
             else:
                 # Cars are cheap to move
                 r -= cfg.car_move_cost if s.is_moving else 0.0

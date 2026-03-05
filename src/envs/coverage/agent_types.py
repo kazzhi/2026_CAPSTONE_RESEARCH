@@ -11,4 +11,5 @@ class AgentState:
     is_active: bool 
     is_moving: bool 
     collisions: int 
+    num_spawns: int
     # ... other stats

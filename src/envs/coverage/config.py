@@ -28,9 +28,10 @@ class CoverageConfig:
     crash_penalty: float = -500.0
     step_penalty: float = -0.01
     target_coverage: float = 0.95
-    max_steps: int = 1000
+    max_steps: int = 5000
     battery_out_penalty: float = -500.0
     overlap_penalty: float = -1.0
+    car_spawn_reward: float = 50.0
 
 
     

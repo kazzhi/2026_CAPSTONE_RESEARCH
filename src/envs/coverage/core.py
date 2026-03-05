@@ -31,11 +31,11 @@ class CoverageCore:
         self._newly_spawned = []
 
         
-        self._renderer = MatplotlibGridRenderer(
-            height=self.cfg.height,
-            width=self.cfg.width,
-            cfg=RenderConfig(cell_px=8)
-        )
+        # self._renderer = MatplotlibGridRenderer(
+        #     height=self.cfg.height,
+        #     width=self.cfg.width,
+        #     cfg=RenderConfig(cell_px=8)
+        # )
 
     def reset(self, seed=None, options=None):
         self.rng = np.random.default_rng(seed)
@@ -52,10 +52,18 @@ class CoverageCore:
 
         for a_id in self.possible_agents:
             if "drone" in a_id:
-                self.agent_state[a_id] = AgentState(type = "drone", x=self.cfg.start_x, y=self.cfg.start_y, battery=100.0, is_active=True)
+                self.agent_state[a_id] = AgentState(type = "drone", x=self.cfg.start_x, y=self.cfg.start_y, battery=100.0, is_active=True, 
+                                                    pos = (self.cfg.start_x, self.cfg.start_y), 
+                                                    is_moving = False, 
+                                                    collisions = 0,
+                                                    num_spawns = 0)
             else:
                 # Cars start inactive and "off-map"
-                self.agent_state[a_id] = AgentState(type = "car", x=-1, y=-1, battery=0.0, is_active=False)
+                self.agent_state[a_id] = AgentState(type = "car", x=-1, y=-1, battery=0.0, is_active=False,
+                                                    pos = (-1, -1),
+                                                    is_moving = False,
+                                                    collisions = 0,
+                                                    num_spawns = 0)
 
         # 4) Reset time + caches
         self.t = 0
@@ -76,7 +84,7 @@ class CoverageCore:
 
         # 1) Convert actions to intended moves/controls
         intended = self._decode_actions(actions)
-        self._apply_moves(intended, alive_agents)
+        spawns_by_drones = self._apply_moves(intended, alive_agents)
 
         new_cells, overlap_cells = self._update_coverage_from_agents()
 
@@ -88,8 +96,9 @@ class CoverageCore:
             agent_state=self.agent_state,
             t=self.t,
             alive_agents=alive_agents,
-            new_cells = new_cells,
-            overlap_cells = overlap_cells
+            newly_covered_count= new_cells,
+            overlap_cells = overlap_cells,
+            spawn_info = spawns_by_drones
         )
 
         # 5) Compute termination/truncation
@@ -112,6 +121,13 @@ class CoverageCore:
     def _build_observation(self, agent_id):
         s = self.agent_state[agent_id]
         cfg = self.cfg
+        win_size = cfg.drone_fov if "drone" in agent_id else cfg.car_fov
+        if not s.is_active or s.x == -1 or s.y == -1:
+        # Return a zeroed-out version of your observation space
+            return {
+                "image": np.zeros((2, win_size, win_size),dtype=np.float32),
+                "vector": np.zeros((3,), dtype=np.float32)
+            }
         
         # Determine window size
         win_size = cfg.drone_fov if "drone" in agent_id else cfg.car_fov
@@ -197,7 +213,7 @@ class CoverageCore:
         for a, s in self.agent_state.items():
             infos[a] = {
                 "collisions": s.collisions,
-                "cells_covered_by_agent": s.covered_count,
+          
 
             }
         
@@ -215,6 +231,7 @@ class CoverageCore:
     
     def _apply_moves(self, actions, alive_agents):
         move_map = {0: (0,0), 1: (-1,0), 2: (1,0), 3: (0,-1), 4: (0,1)}
+        spawns_by_drone = {a: 0 for a in alive_agents if "drone" in a}
 
         for agent_id in alive_agents:
             s = self.agent_state[agent_id]
@@ -239,10 +256,14 @@ class CoverageCore:
                     target_car.pos = (s.x, s.y)
                     target_car.battery = 100.0
                     target_car.is_active = True
+                    target_car.is_moving = False
+                    target_car.collisions = 0
+                    target_car.num_spawns = 0
+                    spawns_by_drone[agent_id] += 1
                     self._newly_spawned.append(available_car)
                 
                 # Drone spent its turn spawning; skip movement
-                self._handle_battery_and_status(s, is_moving=False)
+                self._handle_battery_and_status(s,  agent_id, is_moving=False)
                 continue 
 
             # --- 2. HANDLE MOVEMENT (Car & Drone) ---
@@ -264,10 +285,11 @@ class CoverageCore:
             # --- 3. UPDATE STATUS ---
             is_moving = (dx != 0 or dy != 0)
             s.is_moving = is_moving
-            self._handle_battery_and_status(s, is_moving, agent_id)
+            self._handle_battery_and_status(s, agent_id, is_moving)
             s.pos = (s.x, s.y)
+        return spawns_by_drone
 
-    def _handle_battery_and_status(self, s, is_moving, agent_id):
+    def _handle_battery_and_status(self, s, agent_id, is_moving):
         # Apply costs from your config
         if "drone" in agent_id :
             s.battery -= self.cfg.drone_move_cost if is_moving else self.cfg.drone_idle_cost

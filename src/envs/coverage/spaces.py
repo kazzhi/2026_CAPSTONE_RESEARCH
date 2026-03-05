@@ -1,4 +1,4 @@
-from gym import spaces
+from gymnasium import spaces
 import numpy as np
 
 
@@ -12,7 +12,7 @@ def get_observation_space(agent_id, cfg):
         # 2 Channels: [Obstacles, Coverage]
         "image": spaces.Box(low=0, high=1, shape=(2, win_size, win_size), dtype=np.float32),
         # Vector: [Battery, Normalized_X, Normalized_Y]
-        "vector": spaces.Box(low=1, high=1, shape=(4,), dtype=np.float32)
+        "vector": spaces.Box(low=0.0, high=1.0, shape=(3,), dtype=np.float32)
     })
 
 def get_action_space(agent_id):
